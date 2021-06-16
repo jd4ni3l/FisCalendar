@@ -1,0 +1,293 @@
+--Name:           Corporate_Fiscal_Calendar
+--Created on:     1/1/beginningoftime
+--Published on:   6/6/2019
+--Developed by:   
+--Purpose:        SQL script to create MSC Corporate Fiscal Calendar based on rules from administration
+--Security:       
+--Change Log:     
+--DATE || DESCRIPTION
+--07/24/2019 || Added running_day, running_period, running_week to the report. Also updated all reports that use this sproc.
+
+--RULES USED TO CREATE THE SCRIPT
+--	1) Fiscal year always begins on 1/1/xxxx
+--		  a. W1 can be no shorter than 4 days
+--	2) Fiscal year always ends on 12/31/xxxx
+--		  a. W52 can be longer than 7 days
+--	3) Fiscal year is based on 4-4-5 periods
+--  		a. Q1 = Weeks 1-13
+--	  	b. Q2 = Weeks 14-26
+--		  c. Q3 = Weeks 27-39
+--		  d. Q4 = Weeks 40-52
+--  4) There will never be a week 53
+
+/*
+      --This Query is built for a 4-4-5 calendar, Mon - Sun week.
+      --Each Fiscal year start on 01/01/YYYY ends on 12/31/YYYY.
+ */
+ 
+--INSTRUCTIONS TO USE IN OTHER QUERIES:
+/*
+-----------------------------------------------------------------------------------------------
+--CREATE MSC_DATES TABLE
+	CREATE TABLE #MSC_DATES
+	  (
+  		DATE VARCHAR(10),
+  		Date_Time_Target DATETIME,
+  		MSC_Week INT,
+  		MSC_Period INT,
+  		MSC_Quarter INT,
+  		MSC_DOW_Num INT,
+  		MSC_DOW_Text VARCHAR(10),
+  		MSC_Year INT,
+  		Running_Day INT,
+  		Running_Period INT,
+  		Running_Week INT
+	  )
+	  
+--POPULATE MSC_DATES TABLE WITH sproc264617_716833_1154602, SQL_0000_Corporate_Fiscal_Calendar. 
+INSERT #MSC_DATES
+EXEC sproc264617_716833_1154602
+-----------------------------------------------------------------------------------------------
+*/
+
+ 
+DECLARE 
+		@FiscalCalendarStart DATETIME,					-- Calendar starts
+		@EndOfCalendar DATETIME,								-- Calendar ends
+		@CurrentDate DATETIME,									-- Calendar date being calculated against
+		@RunningDaySeed INT,										-- Days calculations
+		@RunningPeriodSeed INT,									-- Fiscal Month
+		@WorkWeekSeed INT,											-- Fiscal Week
+		@RunningWeekSeed INT,										-- Weeks calculations
+		@FiscalYearSeed INT,										-- Years calculations
+		@WorkQuarterSeed INT,										-- Fiscal Quarter            
+		@WeekOfMonth INT,											  -- Rolling week of month            
+		@WorkPeriod INT,											  -- Used to assign where the extra "leap week" goes. Based on the 4-4-5 calendar.
+		@runningWeekCounter INT,								-- Running week counter
+		@runningPeriodCounter INT								-- Running period counter
+		
+DECLARE @FiscalTimePeriods AS TABLE (
+
+									Sysdate VARCHAR (10),					    -- Date with format MMDDYYYY
+									Date_Time_Target DATETIME,				-- The date, but with Time duh
+									MSC_Week INT,							        -- Running week according MSC Calendar
+									MSC_Period INT,							      -- MSC Fiscal Period
+									MSC_Quarter INT,						      -- Weeks on a Quarter of the MSC Calendar
+									MSC_DOW_Num INT,						      -- Number of the day during the week ( M(1) - S(7) )
+									MSC_DOW_Text VARCHAR (10),				-- Name of the Day
+									MSC_Year INT,					 		        -- Calendar with corresponding days into the Fiscal year
+									Running_Day INT,      					  -- Running Days counter
+									Running_Period INT,		      		  -- Running Period counter
+									Running_Week INT					        -- Running weeks counter
+									
+									)--Of Table
+
+--/*	These are user variables, and should be set according every need		*/       
+SELECT
+		@FiscalCalendarStart = '20150101',							-- The date of year start. Used as the base date for calculations (This case will be on 12/29/2015 to match 7 days week for week 1 of 2015)
+		@EndOfCalendar = '20901231' ,										-- The date on which the calendar query will end. Can be adjusted for each need
+		@RunningDaySeed = 1,												    -- This is used to measure the number of days since the calendar began, often used for depreciation (usually 1)
+		@RunningPeriodSeed = 1,												  -- The number of fiscal months since the original calendar began (usually 1)
+		@RunningWeekSeed = 1,												    -- The number of fiscal weeks since the original calendar began (usually 1)
+		@FiscalYearSeed = 2015,												  -- The starting fiscal year (first 3 days of week 1 belongs to 2014 but it's on 2015 fiscal calendar)
+		@runningWeekCounter = 1
+
+--/*	These are iteration variables, do not mess with these		*/
+SELECT       
+		@WorkPeriod = 1 ,
+		@WorkWeekSeed = 1 ,
+		@WeekOfMonth = 1 ,
+		@WorkQuarterSeed = 1,
+		@runningPeriodCounter = 1
+ 
+--/*	The loop is iterated once for each day						*/
+SET @CurrentDate = @FiscalCalendarStart
+ 
+WHILE @CurrentDate <= @EndOfCalendar
+
+BEGIN
+
+--/*******************************************************INSERT***********************************************************************************************************/
+       INSERT INTO @FiscalTimePeriods
+       SELECT
+			CONVERT ( VARCHAR (10), @CurrentDate , 101 ) AS SysDate,
+			@CurrentDate AS Date_Time_Target,
+			@WorkWeekSeed AS MSC_Week,
+			CASE 
+				WHEN @WorkPeriod = 13 THEN 12
+				ELSE @WorkPeriod
+			END AS MSC_Period,
+			@WorkQuarterSeed AS MSC_Quarter,
+			DATEPART (DW, @CurrentDate - 1) AS MSC_DOW_Num,
+			DATENAME (WEEKDAY, @CurrentDate) AS MSC_DOW_Text,
+			YEAR (@CurrentDate) AS MSC_Year,
+			@RunningDaySeed,
+			@RunningPeriodCounter,
+			@RunningWeekCounter
+
+--/****************************************************SOME CALCULATIONS***************************************************************************************************/
+       
+      /*	Iterate the date and increment the RunningDay	*/
+       SET @CurrentDate = DATEADD ( D , 1 , @CurrentDate )
+       
+       SELECT @RunningDaySeed = @RunningDaySeed + 1
+			/* If @CurrentDate is 01/01/YYYY reset fiscal counters	*/
+			IF (DATEPART (MONTH, @CurrentDate) = 1 AND DATEPART(DAY, @CurrentDate) = 1)
+				BEGIN	
+						SELECT
+								@WorkPeriod = 1 ,
+								@WorkWeekSeed = 1 ,
+								@WeekOfMonth = 1 ,
+								@WorkQuarterSeed = 1,
+								@RunningWeekSeed = 1
+				END
+		ELSE
+--		/*************ONLY CASE WHERE MONDAY IT'S 12/23 TO 31 *****************/
+		
+--		/*	Check if @CurrentDate is monday	*/
+		IF DATEPART ( DW , @CurrentDate ) = 2 
+--			/*	If @CurrentDate is Dec 23 to 31	*/
+			IF DATEPART (MONTH, @CurrentDate) = 12 AND	(DATEPART(DAY, @CurrentDate) in (23,24, 25, 26, 27, 28, 29,30,31))
+			BEGIN
+--								/*	Iterate the RunningWeek and WeekOfMonth (roll WeekOfMonth if necessary)	*/
+								SELECT	
+										@WorkWeekSeed = 52,
+										@WorkQuarterSeed = 4,
+										@WorkPeriod = 12,
+										@WeekOfMonth = 5
+			END
+		ELSE
+--		/*	Check if day is Monday (Every monday start of new fiscal week), increment fiscal counters	*/
+		IF DATEPART ( DW , @CurrentDate ) = 2
+				BEGIN																							
+--					/*	These months have 5 weeks in the 4-4-5 calendar format	*/
+					IF @WorkPeriod in ( 3 , 6 , 9 , 12 )
+						BEGIN
+--								/*	Iterate the RunningWeek and WeekOfMonth (roll WeekOfMonth if necessary)	*/
+								SELECT	@RunningWeekSeed = @RunningWeekSeed + 1 ,
+										@WeekOfMonth =	CASE
+															WHEN @WeekOfMonth = 5 THEN 1
+															ELSE @WeekOfMonth + 1
+														END,
+										@WorkWeekSeed = @WorkWeekSeed + 1
+--								/*	First week of the month we need to update the WorkPeriod and RunningPeriod	*/
+								IF @WeekOfMonth = 1
+								SELECT	@WorkPeriod = @WorkPeriod + 1
+										
+								IF @WorkWeekSeed in (1, 2, 3, 4 )			SELECT @WorkPeriod = 1
+								IF @WorkWeekSeed in (5, 6, 7, 8 )			SELECT @WorkPeriod = 2
+								IF @WorkWeekSeed in (9, 10, 11, 12, 13 )	SELECT @WorkPeriod = 3
+								IF @WorkWeekSeed in (14, 15, 16, 17 )		SELECT @WorkPeriod = 4
+								IF @WorkWeekSeed in (18, 19, 20, 21 )		SELECT @WorkPeriod = 5
+								IF @WorkWeekSeed in (22, 23, 24, 25, 26 )	SELECT @WorkPeriod = 6
+								IF @WorkWeekSeed in (27, 28, 29, 30 )		SELECT @WorkPeriod = 7
+								IF @WorkWeekSeed in (31, 32, 33, 34 )		SELECT @WorkPeriod = 8
+								IF @WorkWeekSeed in (35, 36, 37, 38, 39 )	SELECT @WorkPeriod = 9
+								IF @WorkWeekSeed in (40, 41, 42, 43 )		SELECT @WorkPeriod = 10
+								IF @WorkWeekSeed in (44, 45, 46, 47 )		SELECT @WorkPeriod = 11
+								IF @WorkWeekSeed in (48, 49, 50, 51, 52 )	SELECT @WorkPeriod = 12
+								
+								IF @WorkWeekSeed in (1, 2, 3, 4 , 5, 6, 7, 8, 9, 10, 11, 12, 13 )				SELECT @WorkQuarterSeed = 1
+								IF @WorkWeekSeed in (14, 15, 16, 17 , 18, 19, 20, 21 , 22, 23, 24, 25, 26 )		SELECT @WorkQuarterSeed = 2
+								IF @WorkWeekSeed in (27, 28, 29, 30 , 31, 32, 33, 34 , 35, 36, 37, 38, 39 )		SELECT @WorkQuarterSeed = 3
+								IF @WorkWeekSeed in (40, 41, 42, 43 , 44, 45, 46, 47 , 48, 49, 50, 51, 52 )		SELECT @WorkQuarterSeed = 4
+						END
+				ELSE
+					BEGIN
+--						/*	Iterate the RunningWeek and WeekOfMonth (roll WeekOfMonth if necessary)	*/
+						SELECT	@RunningWeekSeed = @RunningWeekSeed + 1 ,
+								@WeekOfMonth =	CASE
+												WHEN @WeekOfMonth = 4 THEN 1
+												ELSE @WeekOfMonth + 1
+											END ,
+								@WorkWeekSeed = @WorkWeekSeed + 1
+								
+--								/*	First week of the month we need to update the WorkPeriod and RunninfPeriod	*/
+								IF @WeekOfMonth = 1
+										         SELECT @WorkPeriod = @WorkPeriod + 1
+								
+								IF @WorkWeekSeed in (1, 2, 3, 4 )			SELECT @WorkPeriod = 1
+								IF @WorkWeekSeed in (5, 6, 7, 8 )			SELECT @WorkPeriod = 2
+								IF @WorkWeekSeed in (9, 10, 11, 12, 13 )	SELECT @WorkPeriod = 3
+								IF @WorkWeekSeed in (14, 15, 16, 17 )		SELECT @WorkPeriod = 4
+								IF @WorkWeekSeed in (18, 19, 20, 21 )		SELECT @WorkPeriod = 5
+								IF @WorkWeekSeed in (22, 23, 24, 25, 26 )	SELECT @WorkPeriod = 6
+								IF @WorkWeekSeed in (27, 28, 29, 30 )		SELECT @WorkPeriod = 7
+								IF @WorkWeekSeed in (31, 32, 33, 34 )		SELECT @WorkPeriod = 8
+								IF @WorkWeekSeed in (35, 36, 37, 38, 39 )	SELECT @WorkPeriod = 9
+								IF @WorkWeekSeed in (40, 41, 42, 43 )		SELECT @WorkPeriod = 10
+								IF @WorkWeekSeed in (44, 45, 46, 47 )		SELECT @WorkPeriod = 11
+								IF @WorkWeekSeed in (48, 49, 50, 51, 52 )	SELECT @WorkPeriod = 12
+								
+								IF @WorkWeekSeed in (1, 2, 3, 4 , 5, 6, 7, 8, 9, 10, 11, 12, 13 )				SELECT @WorkQuarterSeed = 1
+								IF @WorkWeekSeed in (14, 15, 16, 17 , 18, 19, 20, 21 , 22, 23, 24, 25, 26 )		SELECT @WorkQuarterSeed = 2
+								IF @WorkWeekSeed in (27, 28, 29, 30 , 31, 32, 33, 34 , 35, 36, 37, 38, 39 )		SELECT @WorkQuarterSeed = 3
+								IF @WorkWeekSeed in (40, 41, 42, 43 , 44, 45, 46, 47 , 48, 49, 50, 51, 52 )		SELECT @WorkQuarterSeed = 4
+						END
+				
+				/* Compare if current date acomplish ISO_WEEK standard ISO 8601*/
+				IF DATEPART ( ISO_WEEK , @CurrentDate ) = 1
+							     SELECT @FiscalYearSeed = @FiscalYearSeed + 1,
+										@WorkPeriod = 1,
+										@WorkWeekSeed = 1,
+										@WorkQuarterSeed = 1,
+										@RunningWeekSeed = 1
+		END
+				------------------------HERE IS WHERE START TO DO THE CALCULATION OF THE runningWeekCounter-------------------------
+
+			IF DATEPART ( DW , @CurrentDate ) = 2 AND @WorkWeekSeed = 52 AND (DATEPART(DAY, @CurrentDate) in (27, 28, 29, 30, 31))
+					SELECT @runningWeekCounter = @runningWeekCounter
+			ELSE
+			IF (DATEPART (MONTH, @CurrentDate) = 1 AND DATEPART(DAY, @CurrentDate) = 1)
+					SELECT @runningWeekCounter = @runningWeekCounter + 1
+			ELSE
+			IF DATEPART ( DW , @CurrentDate ) = 2 AND @WorkWeekSeed = 1 AND (DATEPART(DAY, @CurrentDate) in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11)) --AND 
+					SELECT @runningWeekCounter = @runningWeekCounter
+			ELSE
+			IF DATEPART ( DW , @CurrentDate ) = 2
+					SELECT @runningWeekCounter = @runningWeekCounter + 1
+
+				------------------------HERE IS WHERE START TO DO THE CALCULATION OF THE runningPeriodCounter-------------------------
+
+			IF (DATEPART (MONTH, @CurrentDate) = 1 AND DATEPART(DAY, @CurrentDate) = 1)
+					SELECT @runningPeriodCounter = @runningPeriodCounter + 1
+			ELSE
+			IF DATEPART ( DW , @CurrentDate ) = 2 AND @WorkWeekSeed =5  AND @WorkPeriod = 2
+					SELECT @runningPeriodCounter = @runningPeriodCounter + 1
+			ELSE
+			IF DATEPART ( DW , @CurrentDate ) = 2 AND @WorkWeekSeed =9  AND @WorkPeriod = 3
+					SELECT @runningPeriodCounter = @runningPeriodCounter + 1
+			ELSE
+			IF DATEPART ( DW , @CurrentDate ) = 2 AND @WorkWeekSeed =14  AND @WorkPeriod = 4
+					SELECT @runningPeriodCounter = @runningPeriodCounter + 1
+			ELSE
+			IF DATEPART ( DW , @CurrentDate ) = 2 AND @WorkWeekSeed =18  AND @WorkPeriod = 5
+					SELECT @runningPeriodCounter = @runningPeriodCounter + 1
+			ELSE
+			IF DATEPART ( DW , @CurrentDate ) = 2 AND @WorkWeekSeed =22  AND @WorkPeriod = 6
+					SELECT @runningPeriodCounter = @runningPeriodCounter + 1
+			ELSE
+			IF DATEPART ( DW , @CurrentDate ) = 2 AND @WorkWeekSeed =27  AND @WorkPeriod = 7
+					SELECT @runningPeriodCounter = @runningPeriodCounter + 1
+			ELSE
+			IF DATEPART ( DW , @CurrentDate ) = 2 AND @WorkWeekSeed =31  AND @WorkPeriod = 8
+					SELECT @runningPeriodCounter = @runningPeriodCounter + 1
+			ELSE
+			IF DATEPART ( DW , @CurrentDate ) = 2 AND @WorkWeekSeed =35  AND @WorkPeriod = 9
+					SELECT @runningPeriodCounter = @runningPeriodCounter + 1
+			ELSE
+			IF DATEPART ( DW , @CurrentDate ) = 2 AND @WorkWeekSeed =40  AND @WorkPeriod = 10
+					SELECT @runningPeriodCounter = @runningPeriodCounter + 1
+			ELSE
+			IF DATEPART ( DW , @CurrentDate ) = 2 AND @WorkWeekSeed =44  AND @WorkPeriod = 11
+					SELECT @runningPeriodCounter = @runningPeriodCounter + 1
+			ELSE
+			IF DATEPART ( DW , @CurrentDate ) = 2 AND @WorkWeekSeed =48  AND @WorkPeriod = 12
+					SELECT @runningPeriodCounter = @runningPeriodCounter + 1
+
+END	
+SELECT 
+*
+FROM @FiscalTimePeriods
+
+ORDER BY Date_Time_Target ASC
